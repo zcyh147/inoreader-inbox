@@ -1,8 +1,10 @@
 # Inoreader Inbox
 
-Pull unread or stream-specific articles from Inoreader into a local Markdown inbox.
+An agent skill for pulling unread or stream-specific articles from Inoreader into a local Markdown inbox.
 
-Inoreader Inbox treats Inoreader as the feed/subscription normalizer. It preserves article titles, summaries, authors, sources, publish times, and original URLs so an agent can decide what to read, summarize, search, or hand off to another skill next.
+Inoreader Inbox is designed to be installed as a reusable agent skill. It treats Inoreader as the feed/subscription normalizer, then preserves article titles, summaries, authors, sources, publish times, and original URLs so an agent can decide what to read, summarize, search, or hand off to another skill next.
+
+It can also be run directly as a small local CLI tool through `scripts/run.py`.
 
 ## LLM Quickstart
 
