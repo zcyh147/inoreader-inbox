@@ -124,12 +124,24 @@ First-time login:
 python scripts/run.py rss_ai_inbox.py login
 ```
 
+If you already have the redirected callback URL and want to finish the token exchange without interactive prompts:
+
+```bash
+python scripts/run.py rss_ai_inbox.py login \
+  --client-id "$INOREADER_CLIENT_ID" \
+  --client-secret "$INOREADER_CLIENT_SECRET" \
+  --callback-url "https://127.0.0.1:8765/callback?code=...&state=..." \
+  --auth-state "copied-from-the-original-auth-url"
+```
+
 The skill expects you to create an Inoreader API application and provide:
 
 - Name: `Inoreader Inbox`
 - URL: `https://127.0.0.1:8765`
 - Redirect URI: `https://127.0.0.1:8765/callback`
 - OAuth Scope: `Readable and writable`
+
+The generated authorization URL includes a required OAuth `state` parameter. If you copy the auth URL into another browser or tool, keep that `state` paired with the callback URL and pass it back with `--auth-state`. Inoreader rejects missing `state`, and the script rejects mismatched `state`.
 
 ### 3. Pull inbox items
 
@@ -145,6 +157,14 @@ Specific stream:
 python scripts/run.py rss_ai_inbox.py run \
   --stream "user/-/state/com.google/reading-list" \
   --unread-only \
+  --limit 50
+```
+
+Starred / hearted items:
+
+```bash
+python scripts/run.py rss_ai_inbox.py run \
+  --stream "user/-/state/com.google/starred" \
   --limit 50
 ```
 
@@ -187,6 +207,13 @@ python scripts/run.py rss_ai_inbox.py run --sample
 ```
 
 Useful when testing downstream workflows without live API access.
+
+### OAuth troubleshooting
+
+- If you see `invalid_grant` with `Invalid refresh token`, the saved refresh token is no longer usable. Re-run `python scripts/run.py rss_ai_inbox.py login` to replace `config/token.json`.
+- Authorization codes are one-time use and short-lived. If the token exchange says the code expired, start over with a fresh approval and paste the new callback URL immediately.
+- The browser may fail to load `https://127.0.0.1:8765/callback` locally. That is still fine; copy the full URL from the address bar.
+- If you finish the browser step elsewhere, use `--callback-url` plus the matching `--auth-state` to hand the full callback URL back to the script.
 
 ---
 
