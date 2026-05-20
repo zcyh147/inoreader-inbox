@@ -104,6 +104,14 @@ def add_auth_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--redirect-uri", default=DEFAULT_REDIRECT_URI)
     parser.add_argument("--manual", action="store_true", help="Paste redirected URL/code manually.")
+    parser.add_argument(
+        "--callback-url",
+        help="Exchange a previously captured redirected URL without waiting for interactive input.",
+    )
+    parser.add_argument(
+        "--auth-state",
+        help="Expected OAuth state value when using --callback-url from a separately opened auth URL.",
+    )
     parser.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN_PATH)
 
 
@@ -144,8 +152,12 @@ def authorize_inoreader(args: argparse.Namespace) -> int:
         )
 
     redirect_uri = args.redirect_uri or DEFAULT_REDIRECT_URI
-    manual_callback = args.manual or redirect_uri.startswith("https://127.0.0.1")
-    state = secrets.token_urlsafe(32)
+    if args.callback_url and not args.auth_state:
+        raise SystemExit(
+            "When using --callback-url, also pass --auth-state copied from the original authorization URL."
+        )
+    manual_callback = bool(args.callback_url) or args.manual or redirect_uri.startswith("https://127.0.0.1")
+    state = args.auth_state or secrets.token_urlsafe(32)
     params = {
         "client_id": args.client_id,
         "redirect_uri": redirect_uri,
@@ -154,15 +166,19 @@ def authorize_inoreader(args: argparse.Namespace) -> int:
         "state": state,
     }
     auth_url = f"{INOREADER_AUTH_ENDPOINT}?{urllib.parse.urlencode(params)}"
-    print("Opening browser for Inoreader authorization...")
-    print(f"Redirect URI must match your Inoreader app settings: {redirect_uri}")
-    webbrowser.open(auth_url)
-
-    callback = (
-        read_manual_oauth_callback(expected_state=state)
-        if manual_callback
-        else wait_for_oauth_callback(args.host, args.port)
-    )
+    callback: dict[str, str]
+    if args.callback_url:
+        callback = parse_oauth_callback(args.callback_url, fallback_state=state)
+    else:
+        print("Opening browser for Inoreader authorization...")
+        print(f"Redirect URI must match your Inoreader app settings: {redirect_uri}")
+        print(f"Authorization URL: {auth_url}")
+        webbrowser.open(auth_url)
+        callback = (
+            read_manual_oauth_callback(expected_state=state)
+            if manual_callback
+            else wait_for_oauth_callback(args.host, args.port)
+        )
     if callback.get("state") != state:
         raise SystemExit("OAuth state mismatch; refusing to exchange the code.")
     if "error" in callback:
@@ -213,11 +229,15 @@ def read_manual_oauth_callback(expected_state: str) -> dict[str, str]:
     print("The local HTTPS page may fail to load; that is fine, the URL still contains the code.")
     print("Paste it immediately: the OAuth code is one-time use and short-lived.")
     value = input("Redirected URL: ").strip()
+    return parse_oauth_callback(value, fallback_state=expected_state)
+
+
+def parse_oauth_callback(value: str, fallback_state: str) -> dict[str, str]:
     if value.startswith(("http://", "https://")):
         parsed = urllib.parse.urlparse(value)
         params = urllib.parse.parse_qs(parsed.query)
         return {key: values[0] for key, values in params.items() if values}
-    return {"code": value, "state": expected_state, "state_unverified": "1"}
+    return {"code": value, "state": fallback_state, "state_unverified": "1"}
 
 
 def show_status(args: argparse.Namespace) -> int:
@@ -285,7 +305,10 @@ def exchange_authorization_code(
         ("scope", scope),
         ("grant_type", "authorization_code"),
     ]
-    return http_post_json(INOREADER_TOKEN_ENDPOINT, fields)
+    try:
+        return http_post_json(INOREADER_TOKEN_ENDPOINT, fields)
+    except SystemExit as exc:
+        raise SystemExit(format_authorization_exchange_error(exc)) from exc
 
 
 def refresh_access_token(token_path: Path, token_data: dict[str, Any]) -> dict[str, Any]:
@@ -301,7 +324,10 @@ def refresh_access_token(token_path: Path, token_data: dict[str, Any]) -> dict[s
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
     ]
-    refreshed = http_post_json(INOREADER_TOKEN_ENDPOINT, fields)
+    try:
+        refreshed = http_post_json(INOREADER_TOKEN_ENDPOINT, fields)
+    except SystemExit as exc:
+        raise SystemExit(format_refresh_token_error(exc, token_path)) from exc
     refreshed["client_id"] = client_id
     refreshed["client_secret"] = client_secret
     refreshed["obtained_at"] = utc_timestamp()
@@ -321,6 +347,28 @@ def get_access_token(token_path: Path) -> str | None:
     if int(token_data.get("expires_at", 0)) - now < 60:
         token_data = refresh_access_token(token_path, token_data)
     return token_data.get("access_token")
+
+
+def format_authorization_exchange_error(exc: SystemExit) -> str:
+    message = str(exc)
+    if '"error":"invalid_grant"' in message and "authorization code" in message.lower():
+        return (
+            f"{message}\n"
+            "The authorization code is one-time use and short-lived. Start `python scripts/run.py "
+            "rss_ai_inbox.py login` again, approve access again, and exchange the new callback URL immediately."
+        )
+    return message
+
+
+def format_refresh_token_error(exc: SystemExit, token_path: Path) -> str:
+    message = str(exc)
+    if '"error":"invalid_grant"' in message and "refresh token" in message.lower():
+        return (
+            f"{message}\n"
+            f"The saved refresh token in {token_path} is no longer valid. Inoreader refresh tokens can expire "
+            "or be revoked. Run `python scripts/run.py rss_ai_inbox.py login` again to re-authorize."
+        )
+    return message
 
 
 def save_token(path: Path, token_data: dict[str, Any]) -> None:
